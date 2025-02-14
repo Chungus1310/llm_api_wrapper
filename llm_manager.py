@@ -6,20 +6,19 @@ from typing import Optional, Dict, Any, List
 import google.generativeai as genai
 
 class LLMProviderBase:
-    """
-    Base class for all LLM providers.
-    Subclasses must implement the send_request method to handle provider-specific logic.
-    """
+    """A base class that all LLM providers should inherit from.
+    Provides common functionality for API key management and request handling."""
+    
     def __init__(self, provider_name: str, api_keys: List[str]):
         self.provider_name = provider_name
-        self.api_keys = api_keys  # Round-robin rotation among available keys
+        self.api_keys = api_keys  # Store multiple API keys for rotation
         self.key_index = 0
 
     def get_api_key(self) -> Optional[str]:
+        """Rotates through available API keys in a round-robin fashion"""
         if not self.api_keys:
             return None
         key = self.api_keys[self.key_index]
-        # Round-robin increment
         self.key_index = (self.key_index + 1) % len(self.api_keys)
         return key
 
@@ -31,13 +30,13 @@ class LLMProviderBase:
         top_p: float,
         **kwargs
     ) -> Dict[str, Any]:
-        """
-        Implement provider-specific request logic and return standardized response.
-        Must be overridden by subclasses.
-        """
-        raise NotImplementedError("Subclasses must implement send_request.")
+        """Base method for sending requests to the LLM provider.
+        Must be implemented by each provider class."""
+        raise NotImplementedError("Each provider must implement their own send_request method")
 
 class MistralProvider(LLMProviderBase):
+    """Handler for Mistral AI's language models"""
+    
     def send_request(
         self,
         prompt: str,
@@ -49,9 +48,8 @@ class MistralProvider(LLMProviderBase):
         api_key = self.get_api_key()
         if not api_key:
             return {"error": "No Mistral API key available"}
-        # Example request - adapt to actual Mistral API as needed
+        
         try:
-            # Placeholder request logic (adjust URL/method)
             response = requests.post(
                 "https://api.mistral.ai/generate",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -64,12 +62,13 @@ class MistralProvider(LLMProviderBase):
                 timeout=10
             )
             response.raise_for_status()
-            # Standardize response
             return {"provider": "mistral", "response": response.json()}
         except Exception as e:
             return {"error": str(e)}
 
 class AIStudioProvider(LLMProviderBase):
+    """Handler for AI Studio's language models"""
+    
     def send_request(
         self,
         prompt: str,
@@ -81,7 +80,7 @@ class AIStudioProvider(LLMProviderBase):
         api_key = self.get_api_key()
         if not api_key:
             return {"error": "No AI Studio API key available"}
-        # Example request - adapt to actual AI Studio API as needed
+        
         try:
             response = requests.post(
                 "https://api.aistudio.ai/generate",
@@ -100,6 +99,8 @@ class AIStudioProvider(LLMProviderBase):
             return {"error": str(e)}
 
 class OpenRouterProvider(LLMProviderBase):
+    """Handler for OpenRouter's language models"""
+    
     def send_request(
         self,
         prompt: str,
@@ -111,7 +112,7 @@ class OpenRouterProvider(LLMProviderBase):
         api_key = self.get_api_key()
         if not api_key:
             return {"error": "No OpenRouter API key available"}
-        # Example request - adapt to actual OpenRouter API as needed
+        
         try:
             response = requests.post(
                 "https://api.openrouter.ai/generate",
@@ -130,6 +131,8 @@ class OpenRouterProvider(LLMProviderBase):
             return {"error": str(e)}
 
 class HuggingFaceProvider(LLMProviderBase):
+    """Handler for Hugging Face's language models"""
+    
     def send_request(
         self,
         prompt: str,
@@ -141,7 +144,7 @@ class HuggingFaceProvider(LLMProviderBase):
         api_key = self.get_api_key()
         if not api_key:
             return {"error": "No Hugging Face API key available"}
-        # Example request - adapt to actual Hugging Face Inference API as needed
+        
         try:
             response = requests.post(
                 f"https://api-inference.huggingface.co/models/{model}",
@@ -155,9 +158,11 @@ class HuggingFaceProvider(LLMProviderBase):
             return {"error": str(e)}
 
 class GeminiProvider(LLMProviderBase):
+    """Handler for Google's Gemini language models"""
+    
     def __init__(self, provider_name: str, api_keys: List[str]):
         super().__init__(provider_name, api_keys)
-        # Configure safety settings to reduce warnings
+        # Configure minimal safety settings for more permissive responses
         self.safety_settings = {
             "HARM_CATEGORY_HARASSMENT": "BLOCK_NONE",
             "HARM_CATEGORY_HATE_SPEECH": "BLOCK_NONE",
@@ -178,10 +183,8 @@ class GeminiProvider(LLMProviderBase):
             return {"error": "No Gemini API key available"}
         
         try:
-            # Configure the Gemini API
             genai.configure(api_key=api_key)
             
-            # Setup generation config with safety settings
             generation_config = {
                 "temperature": temperature,
                 "top_p": top_p,
@@ -189,14 +192,12 @@ class GeminiProvider(LLMProviderBase):
                 "max_output_tokens": 8192,
             }
             
-            # Create model instance
             model_instance = genai.GenerativeModel(
                 model_name=model,
                 generation_config=generation_config,
                 safety_settings=self.safety_settings
             )
             
-            # Start chat session and send message
             chat = model_instance.start_chat(history=[])
             response = chat.send_message(prompt)
             
@@ -210,27 +211,29 @@ class GeminiProvider(LLMProviderBase):
             return {"error": str(e)}
 
 class LLMManager:
-    """
-    Main class for handling multiple providers, round-robin key usage, and request logic.
-    Supports both library usage and can be integrated with a Flask server.
-    """
+    """Main orchestrator for managing multiple LLM providers and handling requests"""
+    
     def __init__(self, rate_limit: float = 0.0):
-        """
-        rate_limit (seconds): optional cooldown after each request to avoid throttling.
+        """Initialize the LLM manager with optional rate limiting
+        
+        Args:
+            rate_limit: Seconds to wait between requests (useful for API rate limits)
         """
         self.rate_limit = rate_limit
         self.providers = {}
 
-        # Gather all environment variables as possible keys
-        # For example, MISTRAL_KEY1, MISTRAL_KEY2, ...
+        # Load API keys for all supported providers
         self._load_provider_keys("mistral", "MISTRAL_KEY")
         self._load_provider_keys("aistudio", "AISTUDIO_KEY")
         self._load_provider_keys("openrouter", "OPENROUTER_KEY")
         self._load_provider_keys("huggingface", "HF_KEY")
-        self._load_provider_keys("gemini", "GEMINI_API_KEY")  # Changed from GEMINI_KEY to GEMINI_API_KEY
+        self._load_provider_keys("gemini", "GEMINI_API_KEY")
 
     def _load_provider_keys(self, provider_name: str, env_prefix: str):
+        """Load API keys from environment variables for a specific provider"""
         keys = []
+        
+        # Try numbered keys first (e.g., MISTRAL_KEY1, MISTRAL_KEY2)
         index = 1
         while True:
             env_var = f"{env_prefix}{index}"
@@ -240,21 +243,20 @@ class LLMManager:
             else:
                 break
 
-        # If no keys found, check if single key environment variable exists
+        # Fall back to single key if no numbered keys found
         if not keys and env_prefix in os.environ:
             keys.append(os.environ[env_prefix])
 
+        # Initialize appropriate provider if keys are available
         if keys:
-            if provider_name == "mistral":
-                self.providers[provider_name] = MistralProvider(provider_name, keys)
-            elif provider_name == "aistudio":
-                self.providers[provider_name] = AIStudioProvider(provider_name, keys)
-            elif provider_name == "openrouter":
-                self.providers[provider_name] = OpenRouterProvider(provider_name, keys)
-            elif provider_name == "huggingface":
-                self.providers[provider_name] = HuggingFaceProvider(provider_name, keys)
-            elif provider_name == "gemini":
-                self.providers[provider_name] = GeminiProvider(provider_name, keys)
+            provider_classes = {
+                "mistral": MistralProvider,
+                "aistudio": AIStudioProvider,
+                "openrouter": OpenRouterProvider,
+                "huggingface": HuggingFaceProvider,
+                "gemini": GeminiProvider
+            }
+            self.providers[provider_name] = provider_classes[provider_name](provider_name, keys)
         else:
             self.providers[provider_name] = None
 
@@ -267,13 +269,22 @@ class LLMManager:
         top_p: float = 1.0,
         **kwargs
     ) -> Dict[str, Any]:
-        """
-        Primary interface for sending requests to a provider's LLM.
+        """Send a request to a specific LLM provider
+        
+        Args:
+            prompt: The input text to send to the model
+            provider: Name of the provider to use
+            model: Model identifier for the specific provider
+            temperature: Controls randomness in the output (0.0 to 1.0)
+            top_p: Controls diversity via nucleus sampling (0.0 to 1.0)
+            **kwargs: Additional provider-specific parameters
+            
+        Returns:
+            Dictionary containing the response or error information
         """
         if provider not in self.providers or not self.providers[provider]:
             return {"error": f"Provider '{provider}' is not configured or has no API keys."}
 
-        time.sleep(self.rate_limit)  # optional cooldown
+        time.sleep(self.rate_limit)
         handler = self.providers[provider]
-        result = handler.send_request(prompt, model, temperature, top_p, **kwargs)
-        return result
+        return handler.send_request(prompt, model, temperature, top_p, **kwargs)
