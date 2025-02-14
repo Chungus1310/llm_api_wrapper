@@ -34,7 +34,7 @@ def generate():
     if not prompt or not provider or not model:
         return jsonify({"error": "Prompt, provider, and model are required"}), 400
 
-    if provider not in ["mistral", "openrouter", "huggingface", "gemini"]:
+    if provider not in ["mistral", "huggingface", "gemini"]:
         return jsonify({"error": "Invalid provider"}), 400
 
     result = llm_manager.request(

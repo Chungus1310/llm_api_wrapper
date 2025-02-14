@@ -1,9 +1,9 @@
 import os
 import time
-import random
-import requests
 from typing import Optional, Dict, Any, List
 import google.generativeai as genai
+from huggingface_hub import InferenceClient
+from mistralai import Mistral
 
 class LLMProviderBase:
     """A base class that all LLM providers should inherit from.
@@ -35,8 +35,6 @@ class LLMProviderBase:
         raise NotImplementedError("Each provider must implement their own send_request method")
 
 class MistralProvider(LLMProviderBase):
-    """Handler for Mistral AI's language models"""
-    
     def send_request(
         self,
         prompt: str,
@@ -50,89 +48,19 @@ class MistralProvider(LLMProviderBase):
             return {"error": "No Mistral API key available"}
         
         try:
-            response = requests.post(
-                "https://api.mistral.ai/generate",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={
-                    "model": model,
-                    "prompt": prompt,
-                    "temperature": temperature,
-                    "top_p": top_p
-                },
-                timeout=10
+            client = Mistral(api_key=api_key)
+            chat_response = client.chat.complete(
+                model=model,
+                messages=[{"role": "user", "content": prompt}]
             )
-            response.raise_for_status()
-            return {"provider": "mistral", "response": response.json()}
-        except Exception as e:
-            return {"error": str(e)}
-
-class AIStudioProvider(LLMProviderBase):
-    """Handler for AI Studio's language models"""
-    
-    def send_request(
-        self,
-        prompt: str,
-        model: str,
-        temperature: float,
-        top_p: float,
-        **kwargs
-    ) -> Dict[str, Any]:
-        api_key = self.get_api_key()
-        if not api_key:
-            return {"error": "No AI Studio API key available"}
-        
-        try:
-            response = requests.post(
-                "https://api.aistudio.ai/generate",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={
-                    "model": model,
-                    "prompt": prompt,
-                    "temperature": temperature,
-                    "top_p": top_p
-                },
-                timeout=10
-            )
-            response.raise_for_status()
-            return {"provider": "aistudio", "response": response.json()}
-        except Exception as e:
-            return {"error": str(e)}
-
-class OpenRouterProvider(LLMProviderBase):
-    """Handler for OpenRouter's language models"""
-    
-    def send_request(
-        self,
-        prompt: str,
-        model: str,
-        temperature: float,
-        top_p: float,
-        **kwargs
-    ) -> Dict[str, Any]:
-        api_key = self.get_api_key()
-        if not api_key:
-            return {"error": "No OpenRouter API key available"}
-        
-        try:
-            response = requests.post(
-                "https://api.openrouter.ai/generate",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={
-                    "model": model,
-                    "prompt": prompt,
-                    "temperature": temperature,
-                    "top_p": top_p
-                },
-                timeout=10
-            )
-            response.raise_for_status()
-            return {"provider": "openrouter", "response": response.json()}
+            return {
+                "provider": "mistral",
+                "response": {"text": chat_response.choices[0].message.content}
+            }
         except Exception as e:
             return {"error": str(e)}
 
 class HuggingFaceProvider(LLMProviderBase):
-    """Handler for Hugging Face's language models"""
-    
     def send_request(
         self,
         prompt: str,
@@ -146,20 +74,25 @@ class HuggingFaceProvider(LLMProviderBase):
             return {"error": "No Hugging Face API key available"}
         
         try:
-            response = requests.post(
-                f"https://api-inference.huggingface.co/models/{model}",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={"inputs": prompt, "options": {"temperature": temperature, "top_p": top_p}},
-                timeout=10
+            client = InferenceClient(api_key=api_key)
+            messages = [{"role": "user", "content": prompt}]
+            response = ""
+            stream = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=2048,
+                stream=True
             )
-            response.raise_for_status()
-            return {"provider": "huggingface", "response": response.json()}
+            for chunk in stream:
+                if chunk.choices[0].delta.content:
+                    response += chunk.choices[0].delta.content
+            return {"provider": "huggingface", "response": {"text": response}}
         except Exception as e:
             return {"error": str(e)}
 
 class GeminiProvider(LLMProviderBase):
-    """Handler for Google's Gemini language models"""
-    
     def __init__(self, provider_name: str, api_keys: List[str]):
         super().__init__(provider_name, api_keys)
         # Configure minimal safety settings for more permissive responses
@@ -184,28 +117,23 @@ class GeminiProvider(LLMProviderBase):
         
         try:
             genai.configure(api_key=api_key)
-            
             generation_config = {
                 "temperature": temperature,
                 "top_p": top_p,
                 "top_k": 64,
                 "max_output_tokens": 8192,
+                "response_mime_type": "text/plain",
             }
-            
             model_instance = genai.GenerativeModel(
                 model_name=model,
                 generation_config=generation_config,
                 safety_settings=self.safety_settings
             )
-            
             chat = model_instance.start_chat(history=[])
             response = chat.send_message(prompt)
-            
             return {
                 "provider": "gemini",
-                "response": {
-                    "text": response.text
-                }
+                "response": {"text": response.text}
             }
         except Exception as e:
             return {"error": str(e)}
@@ -224,8 +152,6 @@ class LLMManager:
 
         # Load API keys for all supported providers
         self._load_provider_keys("mistral", "MISTRAL_KEY")
-        self._load_provider_keys("aistudio", "AISTUDIO_KEY")
-        self._load_provider_keys("openrouter", "OPENROUTER_KEY")
         self._load_provider_keys("huggingface", "HF_KEY")
         self._load_provider_keys("gemini", "GEMINI_API_KEY")
 
@@ -251,8 +177,6 @@ class LLMManager:
         if keys:
             provider_classes = {
                 "mistral": MistralProvider,
-                "aistudio": AIStudioProvider,
-                "openrouter": OpenRouterProvider,
                 "huggingface": HuggingFaceProvider,
                 "gemini": GeminiProvider
             }
