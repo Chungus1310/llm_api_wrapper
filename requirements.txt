@@ -1,0 +1,6 @@
+flask
+requests
+google-generativeai
+mistralai
+huggingface_hub
+python-dotenv
